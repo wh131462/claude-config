@@ -36,8 +36,10 @@ cd claude-config
 ### 方式二：一行命令远程安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wh131462/claude-config/master/install.sh | bash -s -- --project
+curl -fsSL https://raw.githubusercontent.com/wh131462/claude-config/master/install.sh | bash
 ```
+
+脚本会自动下载到临时目录后以本地模式重新执行，支持完整的交互式选择。
 
 ### 方式三：Node 版本
 

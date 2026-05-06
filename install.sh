@@ -6,8 +6,31 @@ set -euo pipefail
 # ============================================================
 
 REPO_URL="https://github.com/wh131462/claude-config.git"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RAW_URL="https://raw.githubusercontent.com/wh131462/claude-config/master/install.sh"
+SCRIPT_PATH="${BASH_SOURCE[0]:-}"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd || echo "")"
 TIMESTAMP="$(date +%Y%m%d%H%M%S)"
+
+# ---------- 自举: 当从管道执行时 (curl | bash)，下载脚本到临时目录后重新执行 ----------
+# 这样可以让 stdin 完全自由，支持完整的交互体验。
+if [[ "${CLAUDE_CONFIG_BOOTSTRAPPED:-0}" != "1" ]] && [[ ! -t 0 ]] && [[ -z "$SCRIPT_PATH" || ! -f "$SCRIPT_PATH" ]]; then
+  if [[ ! -e /dev/tty ]]; then
+    echo "当前环境无 /dev/tty，无法交互式安装。请使用 --all 或 git clone 后执行。" >&2
+    exit 1
+  fi
+  TMP_SCRIPT="$(mktemp -t claude-config-install.XXXXXX)"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$RAW_URL" -o "$TMP_SCRIPT" || { echo "下载安装脚本失败" >&2; exit 1; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$TMP_SCRIPT" "$RAW_URL" || { echo "下载安装脚本失败" >&2; exit 1; }
+  else
+    echo "需要 curl 或 wget 来下载安装脚本" >&2
+    exit 1
+  fi
+  chmod +x "$TMP_SCRIPT"
+  export CLAUDE_CONFIG_BOOTSTRAPPED=1
+  exec bash "$TMP_SCRIPT" "$@" </dev/tty
+fi
 
 # ---------- colors ----------
 RED='\033[0;31m'
