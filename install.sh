@@ -5,8 +5,29 @@ set -euo pipefail
 # claude-config installer
 # ============================================================
 
-REPO_URL="https://github.com/wh131462/claude-config.git"
-RAW_URL="https://raw.githubusercontent.com/wh131462/claude-config/master/install.sh"
+REPO_PATH="wh131462/claude-config"
+REPO_BRANCH="master"
+
+# 多镜像源 (按顺序尝试)
+REPO_MIRRORS=(
+  "https://github.com/${REPO_PATH}.git"
+  "https://gh-proxy.com/https://github.com/${REPO_PATH}.git"
+  "https://ghproxy.net/https://github.com/${REPO_PATH}.git"
+  "https://gitclone.com/github.com/${REPO_PATH}.git"
+)
+
+RAW_MIRRORS=(
+  "https://raw.githubusercontent.com/${REPO_PATH}/${REPO_BRANCH}/install.sh"
+  "https://gh-proxy.com/https://raw.githubusercontent.com/${REPO_PATH}/${REPO_BRANCH}/install.sh"
+  "https://ghproxy.net/https://raw.githubusercontent.com/${REPO_PATH}/${REPO_BRANCH}/install.sh"
+  "https://raw.gitmirror.com/${REPO_PATH}/${REPO_BRANCH}/install.sh"
+)
+
+# 网络超时 (秒)
+NET_CONNECT_TIMEOUT=5
+NET_MAX_TIME=30
+CLONE_TIMEOUT=60
+
 SCRIPT_PATH="${BASH_SOURCE[0]:-}"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd || echo "")"
 TIMESTAMP="$(date +%Y%m%d%H%M%S)"
@@ -19,12 +40,20 @@ if [[ "${CLAUDE_CONFIG_BOOTSTRAPPED:-0}" != "1" ]] && [[ ! -t 0 ]] && [[ -z "$SC
     exit 1
   fi
   TMP_SCRIPT="$(mktemp -t claude-config-install.XXXXXX)"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$RAW_URL" -o "$TMP_SCRIPT" || { echo "下载安装脚本失败" >&2; exit 1; }
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$TMP_SCRIPT" "$RAW_URL" || { echo "下载安装脚本失败" >&2; exit 1; }
-  else
-    echo "需要 curl 或 wget 来下载安装脚本" >&2
+  DOWNLOAD_OK=false
+  for raw_url in "${RAW_MIRRORS[@]}"; do
+    echo "尝试下载: $raw_url" >&2
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL --connect-timeout "$NET_CONNECT_TIMEOUT" --max-time "$NET_MAX_TIME" "$raw_url" -o "$TMP_SCRIPT" 2>/dev/null && DOWNLOAD_OK=true && break
+    elif command -v wget >/dev/null 2>&1; then
+      wget --timeout="$NET_MAX_TIME" --tries=1 -qO "$TMP_SCRIPT" "$raw_url" 2>/dev/null && DOWNLOAD_OK=true && break
+    else
+      echo "需要 curl 或 wget 来下载安装脚本" >&2
+      exit 1
+    fi
+  done
+  if ! $DOWNLOAD_OK; then
+    echo "所有镜像源均下载失败，请检查网络连接" >&2
     exit 1
   fi
   chmod +x "$TMP_SCRIPT"
@@ -71,20 +100,44 @@ EOF
 }
 
 # ---------- detect source dir ----------
+clone_with_timeout() {
+  local url="$1" dest="$2"
+  if command -v timeout >/dev/null 2>&1; then
+    GIT_TERMINAL_PROMPT=0 timeout "$CLONE_TIMEOUT" git clone --depth 1 "$url" "$dest" 2>/dev/null
+  elif command -v gtimeout >/dev/null 2>&1; then
+    GIT_TERMINAL_PROMPT=0 gtimeout "$CLONE_TIMEOUT" git clone --depth 1 "$url" "$dest" 2>/dev/null
+  else
+    GIT_TERMINAL_PROMPT=0 git clone --depth 1 "$url" "$dest" 2>/dev/null
+  fi
+}
+
 detect_source() {
   if [[ -d "$SCRIPT_DIR/.claude/skills" ]]; then
     SOURCE_DIR="$SCRIPT_DIR"
-  else
-    info "未检测到本地 skill 文件，正在从远程克隆..."
-    local tmp_dir
-    tmp_dir="$(mktemp -d)"
-    git clone --depth 1 "$REPO_URL" "$tmp_dir" 2>/dev/null || {
-      err "克隆仓库失败，请检查网络或手动克隆后再执行"
-      exit 1
-    }
-    SOURCE_DIR="$tmp_dir"
-    CLEANUP_TMP=true
+    return
   fi
+  info "未检测到本地 skill 文件，尝试从远程克隆..."
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  local cloned=false
+  for repo_url in "${REPO_MIRRORS[@]}"; do
+    info "尝试镜像: $repo_url"
+    rm -rf "$tmp_dir" && mkdir -p "$tmp_dir"
+    if clone_with_timeout "$repo_url" "$tmp_dir"; then
+      cloned=true
+      ok "克隆成功: $repo_url"
+      break
+    else
+      warn "镜像不可用，切换下一个..."
+    fi
+  done
+  if ! $cloned; then
+    err "所有镜像源均克隆失败，请检查网络或手动克隆后再执行"
+    rm -rf "$tmp_dir"
+    exit 1
+  fi
+  SOURCE_DIR="$tmp_dir"
+  CLEANUP_TMP=true
 }
 
 # ---------- parse args ----------

@@ -5,7 +5,14 @@ const path = require("path");
 const { execSync } = require("child_process");
 const readline = require("readline");
 
-const REPO_URL = "https://github.com/wh131462/claude-config.git";
+const REPO_PATH = "wh131462/claude-config";
+const REPO_MIRRORS = [
+  `https://github.com/${REPO_PATH}.git`,
+  `https://gh-proxy.com/https://github.com/${REPO_PATH}.git`,
+  `https://ghproxy.net/https://github.com/${REPO_PATH}.git`,
+  `https://gitclone.com/github.com/${REPO_PATH}.git`,
+];
+const CLONE_TIMEOUT = 60;
 const TIMESTAMP = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
 
 // ---------- colors ----------
@@ -72,21 +79,51 @@ function safeCopyDir(src, dest, force) {
   copyDirSync(src, dest);
 }
 
+// ---------- clone with timeout ----------
+function cloneWithTimeout(url, dest, timeoutSec) {
+  const timeoutCmd = process.platform === "darwin" ? "gtimeout" : "timeout";
+  let hasTimeout = false;
+  try {
+    execSync(`command -v ${timeoutCmd}`, { stdio: "ignore" });
+    hasTimeout = true;
+  } catch {}
+  if (!hasTimeout && process.platform === "darwin") {
+    try {
+      execSync("command -v timeout", { stdio: "ignore" });
+      hasTimeout = true;
+    } catch {}
+  }
+
+  const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  const cmd = hasTimeout
+    ? `${timeoutCmd} ${timeoutSec} git clone --depth 1 "${url}" "${dest}"`
+    : `git clone --depth 1 "${url}" "${dest}"`;
+  execSync(cmd, { stdio: "ignore", env: gitEnv });
+}
+
 // ---------- detect source ----------
 function detectSource(scriptDir) {
   const skillsDir = path.join(scriptDir, ".claude", "skills");
   if (fs.existsSync(skillsDir)) {
     return { sourceDir: scriptDir, cleanup: false };
   }
-  info("未检测到本地 skill 文件，正在从远程克隆...");
+  info("未检测到本地 skill 文件，尝试从远程克隆...");
   const tmpDir = fs.mkdtempSync(path.join(require("os").tmpdir(), "claude-config-"));
-  try {
-    execSync(`git clone --depth 1 ${REPO_URL} "${tmpDir}"`, { stdio: "ignore" });
-  } catch {
-    err("克隆仓库失败，请检查网络或手动克隆后再执行");
-    process.exit(1);
+  for (const repoUrl of REPO_MIRRORS) {
+    info(`尝试镜像: ${repoUrl}`);
+    try {
+      rmDirSync(tmpDir);
+      fs.mkdirSync(tmpDir, { recursive: true });
+      cloneWithTimeout(repoUrl, tmpDir, CLONE_TIMEOUT);
+      ok(`克隆成功: ${repoUrl}`);
+      return { sourceDir: tmpDir, cleanup: true };
+    } catch {
+      warn("镜像不可用，切换下一个...");
+    }
   }
-  return { sourceDir: tmpDir, cleanup: true };
+  rmDirSync(tmpDir);
+  err("所有镜像源均克隆失败，请检查网络或手动克隆后再执行");
+  process.exit(1);
 }
 
 // ---------- list skills ----------
