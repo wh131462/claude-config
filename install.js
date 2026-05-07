@@ -178,6 +178,7 @@ async function interactiveSelect(skills) {
 function parseArgs(argv) {
   const opts = {
     mode: "project",
+    modeExplicit: false,
     all: false,
     yes: false,
     installClaudeMd: true,
@@ -188,12 +189,15 @@ function parseArgs(argv) {
     switch (argv[i]) {
       case "--global":
         opts.mode = "global";
+        opts.modeExplicit = true;
         break;
       case "--project":
         opts.mode = "project";
+        opts.modeExplicit = true;
         break;
       case "--target":
         opts.mode = "custom";
+        opts.modeExplicit = true;
         opts.targetDir = argv[++i];
         break;
       case "--all":
@@ -264,6 +268,37 @@ function resolveDest(opts) {
   return { destDir, destSkills: path.join(destDir, "skills"), claudeMdDest };
 }
 
+// ---------- interactive mode selection ----------
+async function interactiveMode(opts) {
+  const home = require("os").homedir();
+  console.log(`\n${c.bold("请选择安装位置:")}\n`);
+  console.log(`  ${c.cyan("1)")} 全局         ${path.join(home, ".claude")}/`);
+  console.log(`  ${c.cyan("2)")} 当前项目     ${path.join(process.cwd(), ".claude")}/`);
+  console.log(`  ${c.cyan("3)")} 自定义路径`);
+  const choice = (await prompt("\n请输入编号 [默认 2]: ")) || "2";
+  switch (choice) {
+    case "1":
+      opts.mode = "global";
+      break;
+    case "2":
+      opts.mode = "project";
+      break;
+    case "3": {
+      const dir = await prompt("请输入自定义路径: ");
+      if (!dir) {
+        err("自定义路径不能为空");
+        process.exit(1);
+      }
+      opts.mode = "custom";
+      opts.targetDir = dir;
+      break;
+    }
+    default:
+      err(`无效编号: ${choice}`);
+      process.exit(1);
+  }
+}
+
 // ---------- confirm overwrite ----------
 async function confirmOverwrite(opts, claudeMdDest, destSkills, selectedSkills) {
   const conflicts = [];
@@ -291,6 +326,11 @@ async function confirmOverwrite(opts, claudeMdDest, destSkills, selectedSkills) 
 async function main() {
   const args = process.argv.slice(2);
   const opts = parseArgs(args);
+
+  if (!opts.modeExplicit && !opts.all) {
+    await interactiveMode(opts);
+  }
+
   const scriptDir = __dirname;
   const { sourceDir, cleanup } = detectSource(scriptDir);
   const { destDir, destSkills, claudeMdDest } = resolveDest(opts);

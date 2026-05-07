@@ -143,6 +143,7 @@ detect_source() {
 
 # ---------- parse args ----------
 MODE="project"
+MODE_EXPLICIT=false
 ALL=false
 YES=false
 INSTALL_CLAUDE_MD=true
@@ -151,9 +152,9 @@ CLEANUP_TMP=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --global)       MODE="global"; shift ;;
-    --project)      MODE="project"; shift ;;
-    --target)       MODE="custom"; TARGET_DIR="$2"; shift 2 ;;
+    --global)       MODE="global"; MODE_EXPLICIT=true; shift ;;
+    --project)      MODE="project"; MODE_EXPLICIT=true; shift ;;
+    --target)       MODE="custom"; MODE_EXPLICIT=true; TARGET_DIR="$2"; shift 2 ;;
     --all)          ALL=true; YES=true; shift ;;
     --yes|-y)       YES=true; shift ;;
     --no-claude-md) INSTALL_CLAUDE_MD=false; shift ;;
@@ -191,6 +192,31 @@ safe_copy_dir() {
   rm -rf "$dest"
   mkdir -p "$(dirname "$dest")"
   cp -r "$src" "$dest"
+}
+
+# ---------- interactive mode selection ----------
+interactive_mode() {
+  printf "\n${BOLD}请选择安装位置:${NC}\n\n"
+  printf "  ${CYAN}1)${NC} 全局         %s/.claude/\n" "$HOME"
+  printf "  ${CYAN}2)${NC} 当前项目     %s/.claude/\n" "$(pwd)"
+  printf "  ${CYAN}3)${NC} 自定义路径\n"
+  printf "\n请输入编号 [默认 2]: "
+  local choice
+  read -r choice
+  case "${choice:-2}" in
+    1) MODE="global" ;;
+    2) MODE="project" ;;
+    3)
+       printf "请输入自定义路径: "
+       read -r TARGET_DIR
+       if [[ -z "$TARGET_DIR" ]]; then
+         err "自定义路径不能为空"
+         exit 1
+       fi
+       MODE="custom"
+       ;;
+    *) err "无效编号: $choice"; exit 1 ;;
+  esac
 }
 
 # ---------- confirm overwrite ----------
@@ -285,6 +311,10 @@ interactive_select() {
 
 # ---------- install ----------
 do_install() {
+  if ! $MODE_EXPLICIT && ! $ALL; then
+    interactive_mode
+  fi
+
   resolve_dest
 
   printf "\n${BOLD}========== claude-config 安装 ==========${NC}\n\n"
