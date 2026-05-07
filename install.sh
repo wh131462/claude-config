@@ -30,7 +30,6 @@ CLONE_TIMEOUT=60
 
 SCRIPT_PATH="${BASH_SOURCE[0]:-}"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd || echo "")"
-TIMESTAMP="$(date +%Y%m%d%H%M%S)"
 
 # ---------- 自举: 当从管道执行时 (curl | bash)，下载脚本到临时目录后重新执行 ----------
 # 这样可以让 stdin 完全自由，支持完整的交互体验。
@@ -86,10 +85,12 @@ ${BOLD}claude-config installer${NC}
   --global          安装到用户全局 (~/.claude/)
   --project         安装到当前项目 (./.claude/)  [默认]
   --target <path>   安装到指定目录
-  --force           已存在文件时直接覆盖 (默认备份后覆盖)
-  --all             安装所有 skills，跳过交互选择
+  --all             安装所有 skills，跳过交互选择 (隐含 --yes)
+  --yes, -y         跳过覆盖确认，直接覆盖已存在的文件
   --no-claude-md    不安装 CLAUDE.md
   --help            显示此帮助信息
+
+注意: 已存在的文件/目录会被直接覆盖，不会备份。
 
 示例:
   ./install.sh                     # 交互式安装到当前项目
@@ -142,8 +143,8 @@ detect_source() {
 
 # ---------- parse args ----------
 MODE="project"
-FORCE=false
 ALL=false
+YES=false
 INSTALL_CLAUDE_MD=true
 TARGET_DIR=""
 CLEANUP_TMP=false
@@ -153,9 +154,10 @@ while [[ $# -gt 0 ]]; do
     --global)       MODE="global"; shift ;;
     --project)      MODE="project"; shift ;;
     --target)       MODE="custom"; TARGET_DIR="$2"; shift 2 ;;
-    --force)        FORCE=true; shift ;;
-    --all)          ALL=true; shift ;;
+    --all)          ALL=true; YES=true; shift ;;
+    --yes|-y)       YES=true; shift ;;
     --no-claude-md) INSTALL_CLAUDE_MD=false; shift ;;
+    --force)        YES=true; shift ;;  # 兼容旧参数
     --help|-h)      usage ;;
     *) err "未知参数: $1"; usage ;;
   esac
@@ -177,41 +179,44 @@ resolve_dest() {
   esac
 }
 
-# ---------- backup helper ----------
+# ---------- copy helpers ----------
 safe_copy() {
   local src="$1" dest="$2"
-  if [[ -e "$dest" ]]; then
-    if $FORCE; then
-      cp -f "$src" "$dest"
-    else
-      local bak="${dest}.bak.${TIMESTAMP}"
-      cp "$dest" "$bak"
-      warn "已备份: $(basename "$dest") -> $(basename "$bak")"
-      cp -f "$src" "$dest"
-    fi
-  else
-    mkdir -p "$(dirname "$dest")"
-    cp "$src" "$dest"
-  fi
+  mkdir -p "$(dirname "$dest")"
+  cp -f "$src" "$dest"
 }
 
 safe_copy_dir() {
   local src="$1" dest="$2"
-  if [[ -d "$dest" ]]; then
-    if $FORCE; then
-      rm -rf "$dest"
-      cp -r "$src" "$dest"
-    else
-      local bak="${dest}.bak.${TIMESTAMP}"
-      cp -r "$dest" "$bak"
-      warn "已备份: $(basename "$dest") -> $(basename "$bak")"
-      rm -rf "$dest"
-      cp -r "$src" "$dest"
-    fi
-  else
-    mkdir -p "$(dirname "$dest")"
-    cp -r "$src" "$dest"
+  rm -rf "$dest"
+  mkdir -p "$(dirname "$dest")"
+  cp -r "$src" "$dest"
+}
+
+# ---------- confirm overwrite ----------
+confirm_overwrite() {
+  local conflicts=()
+  if $INSTALL_CLAUDE_MD && [[ -f "$CLAUDE_MD_DEST" ]]; then
+    conflicts+=("$CLAUDE_MD_DEST")
   fi
+  for skill in "$@"; do
+    [[ -e "$DEST_SKILLS/$skill" ]] && conflicts+=("$DEST_SKILLS/$skill")
+  done
+
+  [[ ${#conflicts[@]} -eq 0 ]] && return 0
+  $YES && return 0
+
+  printf "\n${YELLOW}以下文件/目录已存在，将被覆盖:${NC}\n"
+  for c in "${conflicts[@]}"; do
+    printf "  - %s\n" "$c"
+  done
+  printf "\n是否继续? [y/N]: "
+  local ans
+  read -r ans
+  case "$ans" in
+    y|Y|yes|YES) return 0 ;;
+    *) info "已取消安装"; exit 0 ;;
+  esac
 }
 
 # ---------- list available skills ----------
@@ -287,12 +292,6 @@ do_install() {
   info "目标目录: $DEST_DIR"
   printf "\n"
 
-  # CLAUDE.md
-  if $INSTALL_CLAUDE_MD && [[ -f "$SOURCE_DIR/CLAUDE.md" ]]; then
-    safe_copy "$SOURCE_DIR/CLAUDE.md" "$CLAUDE_MD_DEST"
-    ok "CLAUDE.md -> $CLAUDE_MD_DEST"
-  fi
-
   # skills
   local skills_to_install=()
   if $ALL; then
@@ -300,6 +299,14 @@ do_install() {
   else
     interactive_select
     skills_to_install=("${SELECTED_SKILLS[@]}")
+  fi
+
+  confirm_overwrite "${skills_to_install[@]}"
+
+  # CLAUDE.md
+  if $INSTALL_CLAUDE_MD && [[ -f "$SOURCE_DIR/CLAUDE.md" ]]; then
+    safe_copy "$SOURCE_DIR/CLAUDE.md" "$CLAUDE_MD_DEST"
+    ok "CLAUDE.md -> $CLAUDE_MD_DEST"
   fi
 
   mkdir -p "$DEST_SKILLS"

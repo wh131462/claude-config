@@ -13,7 +13,6 @@ const REPO_MIRRORS = [
   `https://gitclone.com/github.com/${REPO_PATH}.git`,
 ];
 const CLONE_TIMEOUT = 60;
-const TIMESTAMP = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
 
 // ---------- colors ----------
 const c = {
@@ -54,28 +53,13 @@ function rmDirSync(dir) {
   }
 }
 
-function safeCopy(src, dest, force) {
-  if (fs.existsSync(dest)) {
-    if (!force) {
-      const bak = `${dest}.bak.${TIMESTAMP}`;
-      fs.copyFileSync(dest, bak);
-      warn(`已备份: ${path.basename(dest)} -> ${path.basename(bak)}`);
-    }
-    fs.copyFileSync(src, dest);
-  } else {
-    copyFileSync(src, dest);
-  }
+function safeCopy(src, dest) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
 }
 
-function safeCopyDir(src, dest, force) {
-  if (fs.existsSync(dest)) {
-    if (!force) {
-      const bak = `${dest}.bak.${TIMESTAMP}`;
-      copyDirSync(dest, bak);
-      warn(`已备份: ${path.basename(dest)} -> ${path.basename(bak)}`);
-    }
-    rmDirSync(dest);
-  }
+function safeCopyDir(src, dest) {
+  rmDirSync(dest);
   copyDirSync(src, dest);
 }
 
@@ -194,8 +178,8 @@ async function interactiveSelect(skills) {
 function parseArgs(argv) {
   const opts = {
     mode: "project",
-    force: false,
     all: false,
+    yes: false,
     installClaudeMd: true,
     targetDir: "",
   };
@@ -212,15 +196,20 @@ function parseArgs(argv) {
         opts.mode = "custom";
         opts.targetDir = argv[++i];
         break;
-      case "--force":
-        opts.force = true;
-        break;
       case "--all":
         opts.all = true;
+        opts.yes = true;
+        break;
+      case "--yes":
+      case "-y":
+        opts.yes = true;
         break;
       case "--no-claude-md":
         opts.installClaudeMd = false;
         break;
+      case "--force":
+        opts.yes = true;
+        break; // 兼容旧参数
       case "--help":
       case "-h":
         console.log(`
@@ -234,10 +223,12 @@ ${c.bold("claude-config installer (Node)")}
   --global          安装到用户全局 (~/.claude/)
   --project         安装到当前项目 (./.claude/)  [默认]
   --target <path>   安装到指定目录
-  --force           已存在文件时直接覆盖 (默认备份后覆盖)
-  --all             安装所有 skills，跳过交互选择
+  --all             安装所有 skills，跳过交互选择 (隐含 --yes)
+  --yes, -y         跳过覆盖确认，直接覆盖已存在的文件
   --no-claude-md    不安装 CLAUDE.md
   --help            显示此帮助信息
+
+注意: 已存在的文件/目录会被直接覆盖，不会备份。
 `);
         process.exit(0);
         break;
@@ -273,6 +264,29 @@ function resolveDest(opts) {
   return { destDir, destSkills: path.join(destDir, "skills"), claudeMdDest };
 }
 
+// ---------- confirm overwrite ----------
+async function confirmOverwrite(opts, claudeMdDest, destSkills, selectedSkills) {
+  const conflicts = [];
+  if (opts.installClaudeMd && fs.existsSync(claudeMdDest)) {
+    conflicts.push(claudeMdDest);
+  }
+  for (const name of selectedSkills) {
+    const p = path.join(destSkills, name);
+    if (fs.existsSync(p)) conflicts.push(p);
+  }
+
+  if (conflicts.length === 0) return;
+  if (opts.yes) return;
+
+  console.log(`\n${c.yellow("以下文件/目录已存在，将被覆盖:")}`);
+  for (const p of conflicts) console.log(`  - ${p}`);
+  const ans = await prompt("\n是否继续? [y/N]: ");
+  if (!/^(y|yes)$/i.test(ans)) {
+    info("已取消安装");
+    process.exit(0);
+  }
+}
+
 // ---------- main ----------
 async function main() {
   const args = process.argv.slice(2);
@@ -284,13 +298,6 @@ async function main() {
   console.log(`\n${c.bold("========== claude-config 安装 ==========")}\n`);
   info(`安装模式: ${opts.mode}`);
   info(`目标目录: ${destDir}\n`);
-
-  // CLAUDE.md
-  const claudeMdSrc = path.join(sourceDir, "CLAUDE.md");
-  if (opts.installClaudeMd && fs.existsSync(claudeMdSrc)) {
-    safeCopy(claudeMdSrc, claudeMdDest, opts.force);
-    ok(`CLAUDE.md -> ${claudeMdDest}`);
-  }
 
   // skills
   const skills = listSkills(sourceDir);
@@ -306,12 +313,21 @@ async function main() {
     selected = await interactiveSelect(skills);
   }
 
+  await confirmOverwrite(opts, claudeMdDest, destSkills, selected);
+
+  // CLAUDE.md
+  const claudeMdSrc = path.join(sourceDir, "CLAUDE.md");
+  if (opts.installClaudeMd && fs.existsSync(claudeMdSrc)) {
+    safeCopy(claudeMdSrc, claudeMdDest);
+    ok(`CLAUDE.md -> ${claudeMdDest}`);
+  }
+
   fs.mkdirSync(destSkills, { recursive: true });
 
   for (const name of selected) {
     const src = path.join(sourceDir, ".claude", "skills", name);
     const dest = path.join(destSkills, name);
-    safeCopyDir(src, dest, opts.force);
+    safeCopyDir(src, dest);
     ok(`skill: ${name}`);
   }
 
