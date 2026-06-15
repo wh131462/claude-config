@@ -256,6 +256,32 @@ list_skills() {
 }
 
 # ---------- interactive selection ----------
+# 读取单个按键（含转义序列）
+# 返回字符串: UP / DOWN / SPACE / ENTER / CTRL_C / OTHER
+read_key() {
+  local key rest
+  IFS= read -rsn1 key
+  if [[ "$key" == $'\x1b' ]]; then
+    # 方向键的转义序列 ESC[A/ESC[B 会同时到达，无需小数秒超时
+    # macOS bash 3.2 不支持 -t 小数，这里用 -t 1 兼容兜底
+    IFS= read -rsn2 -t 1 rest 2>/dev/null || rest=""
+    key+="$rest"
+    case "$key" in
+      $'\x1b[A') echo "UP" ;;
+      $'\x1b[B') echo "DOWN" ;;
+      *)         echo "OTHER" ;;
+    esac
+  elif [[ "$key" == "" ]]; then
+    echo "ENTER"
+  elif [[ "$key" == " " ]]; then
+    echo "SPACE"
+  elif [[ "$key" == $'\x03' ]]; then
+    echo "CTRL_C"
+  else
+    echo "OTHER"
+  fi
+}
+
 interactive_select() {
   local skills
   read -ra skills <<< "$(list_skills)"
@@ -266,8 +292,6 @@ interactive_select() {
     exit 1
   fi
 
-  printf "\n${BOLD}可用的 Skills:${NC}\n\n"
-
   local descs=()
   for i in "${!skills[@]}"; do
     local skill="${skills[$i]}"
@@ -277,36 +301,109 @@ interactive_select() {
       desc="$(sed -n 's/^description: *//p' "$skill_file" | head -1)"
     fi
     descs+=("$desc")
-    printf "  ${CYAN}%2d)${NC} %-20s %s\n" "$((i+1))" "$skill" "$desc"
   done
 
-  printf "\n输入编号选择 (逗号分隔, a=全选, q=取消): "
-  read -r selection
+  # items: 索引 0 = All, 索引 1..count = skills
+  local total=$((count + 1))
+  local selected=()
+  local i
+  for ((i=0; i<total; i++)); do
+    selected[i]=0
+  done
 
-  if [[ "$selection" == "q" || "$selection" == "Q" ]]; then
-    info "已取消安装"
-    exit 0
-  fi
+  local cursor=0
+  local first_draw=1
+  local total_lines=$((total + 4))
 
-  SELECTED_SKILLS=()
-  if [[ "$selection" == "a" || "$selection" == "A" ]]; then
-    SELECTED_SKILLS=("${skills[@]}")
-  else
-    IFS=',' read -ra indices <<< "$selection"
-    for idx in "${indices[@]}"; do
-      idx="$(echo "$idx" | tr -d ' ')"
-      if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= count )); then
-        SELECTED_SKILLS+=("${skills[$((idx-1))]}")
+  draw_menu() {
+    if [[ $first_draw -eq 0 ]]; then
+      # 上移 total_lines 行并清除
+      printf "\033[%dA" "$total_lines"
+      printf "\033[J"
+    fi
+    first_draw=0
+
+    printf "\n${BOLD}可用的 Skills:${NC}\n\n"
+    printf "${YELLOW}  [↑/↓] 移动光标  [空格] 切换选中  [回车] 确认${NC}\n\n"
+
+    for ((i=0; i<total; i++)); do
+      local mark="◯"
+      [[ "${selected[$i]}" == "1" ]] && mark="$(printf "${GREEN}◉${NC}")"
+      local arrow=" "
+      [[ $cursor -eq $i ]] && arrow="$(printf "${CYAN}→${NC}")"
+
+      if [[ $i -eq 0 ]]; then
+        printf "  %s %s %-20s %s\n" "$arrow" "$mark" "All" "全选所有 skills"
       else
-        warn "无效编号: $idx，已跳过"
+        local idx=$((i - 1))
+        printf "  %s %s %-20s %s\n" "$arrow" "$mark" "${skills[$idx]}" "${descs[$idx]}"
       fi
     done
-  fi
+  }
 
-  if [[ ${#SELECTED_SKILLS[@]} -eq 0 ]]; then
-    err "未选择任何 skill"
-    exit 1
-  fi
+  # 同步 All 选项状态
+  sync_all() {
+    local all_on=1
+    for ((i=1; i<total; i++)); do
+      [[ "${selected[$i]}" != "1" ]] && all_on=0 && break
+    done
+    selected[0]=$all_on
+  }
+
+  draw_menu
+
+  while true; do
+    local key
+    key=$(read_key </dev/tty)
+    case "$key" in
+      UP)
+        cursor=$((cursor - 1))
+        [[ $cursor -lt 0 ]] && cursor=$((total - 1))
+        draw_menu
+        ;;
+      DOWN)
+        cursor=$(((cursor + 1) % total))
+        draw_menu
+        ;;
+      SPACE)
+        if [[ $cursor -eq 0 ]]; then
+          local new_state=$((1 - ${selected[0]}))
+          for ((i=0; i<total; i++)); do
+            selected[i]=$new_state
+          done
+        else
+          selected[$cursor]=$((1 - ${selected[$cursor]}))
+          sync_all
+        fi
+        draw_menu
+        ;;
+      ENTER)
+        SELECTED_SKILLS=()
+        if [[ "${selected[0]}" == "1" ]]; then
+          SELECTED_SKILLS=("${skills[@]}")
+        else
+          for ((i=1; i<total; i++)); do
+            if [[ "${selected[$i]}" == "1" ]]; then
+              SELECTED_SKILLS+=("${skills[$((i-1))]}")
+            fi
+          done
+        fi
+
+        if [[ ${#SELECTED_SKILLS[@]} -eq 0 ]]; then
+          printf "\n"
+          err "未选择任何 skill"
+          exit 1
+        fi
+        printf "\n"
+        return
+        ;;
+      CTRL_C)
+        printf "\n"
+        info "已取消安装"
+        exit 0
+        ;;
+    esac
+  done
 }
 
 # ---------- install ----------

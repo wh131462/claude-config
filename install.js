@@ -141,37 +141,86 @@ function prompt(question) {
 }
 
 async function interactiveSelect(skills) {
-  console.log(`\n${c.bold("可用的 Skills:")}\n`);
-  skills.forEach((s, i) => {
-    console.log(`  ${c.cyan(`${(i + 1).toString().padStart(2)})`)} ${s.name.padEnd(20)} ${s.desc}`);
-  });
+  return new Promise((resolve) => {
+    const items = [{ name: "All", desc: "全选所有 skills" }, ...skills];
+    const selected = new Array(items.length).fill(false);
+    let cursor = 0;
 
-  const answer = await prompt("\n输入编号选择 (逗号分隔, a=全选, q=取消): ");
+    const draw = () => {
+      console.log(`\n${c.bold("可用的 Skills:")}\n`);
+      console.log(c.yellow("  [↑/↓] 移动光标  [空格] 切换选中  [回车] 确认\n"));
+      items.forEach((item, i) => {
+        const check = selected[i] ? c.green("◉") : "◯";
+        const arrow = cursor === i ? c.cyan("→") : " ";
+        const name = item.name.padEnd(20);
+        console.log(`  ${arrow} ${check} ${name} ${item.desc}`);
+      });
+    };
 
-  if (answer === "q" || answer === "Q") {
-    info("已取消安装");
-    process.exit(0);
-  }
+    const clearLines = (n) => {
+      for (let i = 0; i < n; i++) {
+        process.stdout.write("\x1b[1A\x1b[2K");
+      }
+    };
 
-  if (answer === "a" || answer === "A") {
-    return skills.map((s) => s.name);
-  }
+    const redraw = () => {
+      clearLines(items.length + 4);
+      draw();
+    };
 
-  const selected = [];
-  for (const part of answer.split(",")) {
-    const idx = parseInt(part.trim(), 10);
-    if (idx >= 1 && idx <= skills.length) {
-      selected.push(skills[idx - 1].name);
-    } else {
-      warn(`无效编号: ${part.trim()}，已跳过`);
+    draw();
+
+    readline.emitKeypressEvents(process.stdin);
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
     }
-  }
 
-  if (selected.length === 0) {
-    err("未选择任何 skill");
-    process.exit(1);
-  }
-  return selected;
+    const onKeypress = (str, key) => {
+      if (key.name === "up") {
+        cursor = cursor > 0 ? cursor - 1 : items.length - 1;
+        redraw();
+      } else if (key.name === "down") {
+        cursor = (cursor + 1) % items.length;
+        redraw();
+      } else if (key.name === "space") {
+        if (cursor === 0) {
+          const allSelected = !selected[0];
+          selected.fill(allSelected);
+        } else {
+          selected[cursor] = !selected[cursor];
+          selected[0] = selected.slice(1).every((s) => s);
+        }
+        redraw();
+      } else if (key.name === "return") {
+        process.stdin.setRawMode(false);
+        process.stdin.removeListener("keypress", onKeypress);
+        process.stdin.pause();
+
+        const result = [];
+        if (selected[0]) {
+          result.push(...skills.map((s) => s.name));
+        } else {
+          for (let i = 1; i < items.length; i++) {
+            if (selected[i]) result.push(skills[i - 1].name);
+          }
+        }
+
+        if (result.length === 0) {
+          console.log("");
+          err("未选择任何 skill");
+          process.exit(1);
+        }
+
+        console.log("");
+        resolve(result);
+      } else if (key.ctrl && key.name === "c") {
+        process.stdin.setRawMode(false);
+        process.exit(0);
+      }
+    };
+
+    process.stdin.on("keypress", onKeypress);
+  });
 }
 
 // ---------- parse args ----------
