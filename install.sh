@@ -257,7 +257,7 @@ list_skills() {
 
 # ---------- interactive selection ----------
 # 读取单个按键（含转义序列）
-# 返回字符串: UP / DOWN / SPACE / ENTER / CTRL_C / OTHER
+# 返回字符串: UP / DOWN / SPACE / ENTER / CTRL_C / INFO / OTHER
 read_key() {
   local key rest
   IFS= read -rsn1 key
@@ -277,8 +277,20 @@ read_key() {
     echo "SPACE"
   elif [[ "$key" == $'\x03' ]]; then
     echo "CTRL_C"
+  elif [[ "$key" == "i" || "$key" == "I" ]]; then
+    echo "INFO"
   else
     echo "OTHER"
+  fi
+}
+
+# 截断字符串到指定长度
+truncate_str() {
+  local str="$1" max="${2:-60}"
+  if [[ ${#str} -le $max ]]; then
+    printf "%s" "$str"
+  else
+    printf "%s..." "${str:0:$max}"
   fi
 }
 
@@ -313,32 +325,52 @@ interactive_select() {
 
   local cursor=0
   local first_draw=1
-  local total_lines=$((total + 4))
+  local last_lines=0
+  local showing_detail=0
 
   draw_menu() {
     if [[ $first_draw -eq 0 ]]; then
-      # 上移 total_lines 行并清除
-      printf "\033[%dA" "$total_lines"
+      printf "\033[%dA" "$last_lines"
       printf "\033[J"
     fi
     first_draw=0
 
-    printf "\n${BOLD}可用的 Skills:${NC}\n\n"
-    printf "${YELLOW}  [↑/↓] 移动光标  [空格] 切换选中  [回车] 确认${NC}\n\n"
-
-    for ((i=0; i<total; i++)); do
-      local mark="◯"
-      [[ "${selected[$i]}" == "1" ]] && mark="$(printf "${GREEN}◉${NC}")"
-      local arrow=" "
-      [[ $cursor -eq $i ]] && arrow="$(printf "${CYAN}→${NC}")"
-
-      if [[ $i -eq 0 ]]; then
-        printf "  %s %s %-20s %s\n" "$arrow" "$mark" "All" "全选所有 skills"
+    if [[ $showing_detail -eq 1 ]]; then
+      local name desc
+      if [[ $cursor -eq 0 ]]; then
+        name="All"
+        desc="全选所有 skills"
       else
-        local idx=$((i - 1))
-        printf "  %s %s %-20s %s\n" "$arrow" "$mark" "${skills[$idx]}" "${descs[$idx]}"
+        local idx=$((cursor - 1))
+        name="${skills[$idx]}"
+        desc="${descs[$idx]}"
       fi
-    done
+      printf "\n${BOLD}可用的 Skills:${NC}\n\n"
+      printf "${CYAN}  %s${NC}\n" "$name"
+      printf "  %s\n\n" "$desc"
+      printf "${YELLOW}  [按任意键返回列表]${NC}\n"
+      last_lines=7
+    else
+      printf "\n${BOLD}可用的 Skills:${NC}\n\n"
+      printf "${YELLOW}  [↑/↓] 移动  [空格] 切换  [i] 详情  [回车] 确认${NC}\n\n"
+
+      for ((i=0; i<total; i++)); do
+        local mark="◯"
+        [[ "${selected[$i]}" == "1" ]] && mark="$(printf "${GREEN}◉${NC}")"
+        local arrow=" "
+        [[ $cursor -eq $i ]] && arrow="$(printf "${CYAN}→${NC}")"
+
+        if [[ $i -eq 0 ]]; then
+          printf "  %s %s %-22s %s\n" "$arrow" "$mark" "All" "全选所有 skills"
+        else
+          local idx=$((i - 1))
+          local short
+          short=$(truncate_str "${descs[$idx]}" 60)
+          printf "  %s %s %-22s %s\n" "$arrow" "$mark" "${skills[$idx]}" "$short"
+        fi
+      done
+      last_lines=$((total + 4))
+    fi
   }
 
   # 同步 All 选项状态
@@ -355,6 +387,13 @@ interactive_select() {
   while true; do
     local key
     key=$(read_key </dev/tty)
+
+    if [[ $showing_detail -eq 1 ]]; then
+      showing_detail=0
+      draw_menu
+      continue
+    fi
+
     case "$key" in
       UP)
         cursor=$((cursor - 1))
@@ -363,6 +402,10 @@ interactive_select() {
         ;;
       DOWN)
         cursor=$(((cursor + 1) % total))
+        draw_menu
+        ;;
+      INFO)
+        showing_detail=1
         draw_menu
         ;;
       SPACE)

@@ -145,16 +145,31 @@ async function interactiveSelect(skills) {
     const items = [{ name: "All", desc: "全选所有 skills" }, ...skills];
     const selected = new Array(items.length).fill(false);
     let cursor = 0;
+    let showingDetail = false;
+
+    const truncate = (str, maxLen = 60) => {
+      if (str.length <= maxLen) return str;
+      return str.substring(0, maxLen) + "...";
+    };
 
     const draw = () => {
       console.log(`\n${c.bold("可用的 Skills:")}\n`);
-      console.log(c.yellow("  [↑/↓] 移动光标  [空格] 切换选中  [回车] 确认\n"));
-      items.forEach((item, i) => {
-        const check = selected[i] ? c.green("◉") : "◯";
-        const arrow = cursor === i ? c.cyan("→") : " ";
-        const name = item.name.padEnd(20);
-        console.log(`  ${arrow} ${check} ${name} ${item.desc}`);
-      });
+      console.log(c.yellow("  [↑/↓] 移动  [空格] 切换  [i] 查看详情  [回车] 确认\n"));
+
+      if (showingDetail) {
+        const item = items[cursor];
+        console.log(c.cyan(`\n  ${item.name}`));
+        console.log(`  ${item.desc}\n`);
+        console.log(c.yellow("  [按任意键返回列表]"));
+      } else {
+        items.forEach((item, i) => {
+          const check = selected[i] ? c.green("◉") : "◯";
+          const arrow = cursor === i ? c.cyan("→") : " ";
+          const name = item.name.padEnd(22);
+          const desc = truncate(item.desc, 60);
+          console.log(`  ${arrow} ${check} ${name} ${desc}`);
+        });
+      }
     };
 
     const clearLines = (n) => {
@@ -164,7 +179,8 @@ async function interactiveSelect(skills) {
     };
 
     const redraw = () => {
-      clearLines(items.length + 4);
+      const lines = showingDetail ? 7 : items.length + 4;
+      clearLines(lines);
       draw();
     };
 
@@ -176,11 +192,20 @@ async function interactiveSelect(skills) {
     }
 
     const onKeypress = (str, key) => {
+      if (showingDetail) {
+        showingDetail = false;
+        redraw();
+        return;
+      }
+
       if (key.name === "up") {
         cursor = cursor > 0 ? cursor - 1 : items.length - 1;
         redraw();
       } else if (key.name === "down") {
         cursor = (cursor + 1) % items.length;
+        redraw();
+      } else if (key.name === "i") {
+        showingDetail = true;
         redraw();
       } else if (key.name === "space") {
         if (cursor === 0) {
